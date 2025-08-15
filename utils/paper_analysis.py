@@ -8,8 +8,9 @@ from dotenv import load_dotenv
 from collections import Counter
 import google.generativeai as genai
 
-load_dotenv()
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+import streamlit as st
+import os
+os.environ["GEMINI_API_KEY"] = st.secrets["GEMINI_API_KEY"]
 
 # ---------------- PDF TEXT EXTRACTION ----------------
 def extract_text_from_pdf(uploaded_file):

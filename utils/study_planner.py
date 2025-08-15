@@ -2,8 +2,10 @@ import os
 import google.generativeai as genai
 from dotenv import load_dotenv
 
-load_dotenv()
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+import streamlit as st
+import os
+os.environ["GEMINI_API_KEY"] = st.secrets["GEMINI_API_KEY"]
+
 
 def stress_test_plan(topics, hours_per_day, days_until_exam, context=None):
     if context is None:
