@@ -1,10 +1,11 @@
 import os
 import re
+import json
 import google.generativeai as genai
 import PyPDF2
 import streamlit as st
 from dotenv import load_dotenv
-from collections import defaultdict
+from collections import Counter
 
 load_dotenv()
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
@@ -17,75 +18,59 @@ def extract_text_from_pdf(uploaded_file):
     for page in reader.pages:
         page_text = page.extract_text() or ""
         text += page_text + "\n"
-    # Clean up excessive whitespace
+    # Clean whitespace
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
-# ---------------- HELPER: CHUNKING ----------------
-def chunk_text(text, chunk_size=3000):
-    """Split long text into smaller chunks."""
-    return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
+# ---------------- KEYWORD ANALYSIS ----------------
+def get_top_keywords(text, top_n=30):
+    """Return top N most common words (filtering stopwords)."""
+    stopwords = set("""
+    the is in at of and a to for with on as by an be this that from or are it
+    """.split())
+    words = re.findall(r"\b[a-zA-Z][a-zA-Z0-9-]+\b", text.lower())
+    words = [w for w in words if w not in stopwords and len(w) > 2]
+    freq = Counter(words)
+    return [word for word, _ in freq.most_common(top_n)]
 
 # ---------------- MAIN TOPIC EXTRACTION ----------------
 def predict_topics_from_papers(combined_text, num_topics=10):
     """
-    Splits PDF text into chunks, processes each with Gemini,
-    and merges results with importance percentages.
+    Extracts keywords locally, then sends them to Gemini in ONE call
+    for detailed topic importance analysis.
     """
-    chunks = chunk_text(combined_text, chunk_size=3000)
-    total_chunks = len(chunks)
-    topic_scores = defaultdict(list)
-    topic_details = defaultdict(str)
+    st.info("🔍 Analyzing question papers… please wait.")
 
-    # Process each chunk with a progress bar
-    progress_bar = st.progress(0)
-    for idx, chunk in enumerate(chunks, start=1):
-        try:
-            model = genai.GenerativeModel("gemini-1.5-flash")
-            prompt = f"""
-            From the following exam questions text, extract the top {num_topics} most important topics.
-            For each topic, give:
-            - Topic name
-            - Estimated importance (0–100) based on frequency/relevance
-            - Short 1–2 sentence detail
+    # Get top keywords locally
+    keywords = get_top_keywords(combined_text, top_n=40)
 
-            Return in JSON list format like:
-            [
-              {{"topic": "...", "importance": 85, "details": "..."}},
-              ...
-            ]
+    try:
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        prompt = f"""
+        You are analyzing exam question papers.
 
-            Exam Questions:
-            {chunk}
-            """
+        Based on these keywords:
+        {', '.join(keywords)}
 
-            response = model.generate_content(prompt, request_options={"timeout": 60})
-            raw_text = getattr(response, "text", "").strip()
+        Identify the top {num_topics} exam topics.
+        For each topic, provide:
+        - topic: clear name
+        - importance: integer 0–100 (percentage)
+        - details: 1–2 sentence description of why it's important.
 
-            import json
-            topics = json.loads(raw_text)
+        Return the output as a JSON list like:
+        [
+          {{"topic": "Topic Name", "importance": 85, "details": "Reason here"}},
+          ...
+        ]
+        """
 
-            # Merge topics across chunks
-            for t in topics:
-                name = t["topic"].strip()
-                topic_scores[name].append(t["importance"])
-                if not topic_details[name]:
-                    topic_details[name] = t["details"]
+        response = model.generate_content(prompt, request_options={"timeout": 60})
+        raw_text = getattr(response, "text", "").strip()
 
-        except Exception as e:
-            st.warning(f"Error processing chunk {idx}/{total_chunks}: {e}")
+        topics = json.loads(raw_text)
+        topics.sort(key=lambda x: x["importance"], reverse=True)
+        return topics
 
-        progress_bar.progress(idx / total_chunks)
-
-    # Average importance scores & sort
-    merged_results = [
-        {
-            "topic": name,
-            "importance": round(sum(scores) / len(scores), 2),
-            "details": topic_details[name]
-        }
-        for name, scores in topic_scores.items()
-    ]
-    merged_results.sort(key=lambda x: x["importance"], reverse=True)
-
-    return merged_results[:num_topics]
+    except Exception as e:
+        return [{"topic": f"Error: {e}", "importance": 0, "details": ""}]
